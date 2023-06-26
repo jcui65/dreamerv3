@@ -12,7 +12,7 @@ def main():
       'logdir': '~/logdir/run1',
       'run.train_ratio': 64,
       'run.log_every': 30,  # Seconds
-      'batch_size': 16,
+      'batch_size': 2,#16,#default is 16, 16 will lead to OOM for local machine!
       'jax.prealloc': False,
       'encoder.mlp_keys': '$^',
       'decoder.mlp_keys': '$^',
