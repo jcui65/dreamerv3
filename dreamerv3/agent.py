@@ -34,7 +34,7 @@ class Agent(nj.Module):
     self.task_behavior = getattr(behaviors, config.task_behavior)(
         self.wm, self.act_space, self.config, name='task_behavior')
     if config.expl_behavior == 'None':
-      self.expl_behavior = self.task_behavior
+      self.expl_behavior = self.task_behavior#do you explore or not?
     else:
       self.expl_behavior = getattr(behaviors, config.expl_behavior)(
           self.wm, self.act_space, self.config, name='expl_behavior')
@@ -49,19 +49,19 @@ class Agent(nj.Module):
     return self.wm.initial(batch_size)
 
   def policy(self, obs, state, mode='train'):
-    self.config.jax.jit and print('Tracing policy function.')
-    obs = self.preprocess(obs)
+    self.config.jax.jit and print('Tracing policy function.')#that is where it comes from!!!
+    obs = self.preprocess(obs)#line 104 for definition
     (prev_latent, prev_action), task_state, expl_state = state
     embed = self.wm.encoder(obs)
     latent, _ = self.wm.rssm.obs_step(
-        prev_latent, prev_action, embed, obs['is_first'])
+        prev_latent, prev_action, embed, obs['is_first'])#this is the predict in ls3
     self.expl_behavior.policy(latent, expl_state)
     task_outs, task_state = self.task_behavior.policy(latent, task_state)
     expl_outs, expl_state = self.expl_behavior.policy(latent, expl_state)
     if mode == 'eval':
       outs = task_outs
       outs['action'] = outs['action'].sample(seed=nj.rng())
-      outs['log_entropy'] = jnp.zeros(outs['action'].shape[:1])
+      outs['log_entropy'] = jnp.zeros(outs['action'].shape[:1])#so it means deterministic?
     elif mode == 'explore':
       outs = expl_outs
       outs['log_entropy'] = outs['action'].entropy()
@@ -81,10 +81,10 @@ class Agent(nj.Module):
     metrics.update(mets)
     context = {**data, **wm_outs['post']}
     start = tree_map(lambda x: x.reshape([-1] + list(x.shape[2:])), context)
-    _, mets = self.task_behavior.train(self.wm.imagine, start, context)
+    _, mets = self.task_behavior.train(self.wm.imagine, start, context)#see 181
     metrics.update(mets)
     if self.config.expl_behavior != 'None':
-      _, mets = self.expl_behavior.train(self.wm.imagine, start, context)
+      _, mets = self.expl_behavior.train(self.wm.imagine, start, context)#seems mets is a dictionary
       metrics.update({'expl_' + key: value for key, value in mets.items()})
     outs = {}
     return outs, state, metrics
@@ -106,16 +106,16 @@ class Agent(nj.Module):
     for key, value in obs.items():
       if key.startswith('log_') or key in ('key',):
         continue
-      if len(value.shape) > 3 and value.dtype == jnp.uint8:
-        value = jaxutils.cast_to_compute(value) / 255.0
+      if len(value.shape) > 3 and value.dtype == jnp.uint8:#this means it is the image!
+        value = jaxutils.cast_to_compute(value) / 255.0#in ls3 also /255!
       else:
         value = value.astype(jnp.float32)
       obs[key] = value
-    obs['cont'] = 1.0 - obs['is_terminal'].astype(jnp.float32)
+    obs['cont'] = 1.0 - obs['is_terminal'].astype(jnp.float32)#like done in ls3
     return obs
 
 
-class WorldModel(nj.Module):
+class WorldModel(nj.Module):#wm is here!
 
   def __init__(self, obs_space, act_space, config):
     self.obs_space = obs_space
@@ -170,15 +170,15 @@ class WorldModel(nj.Module):
       losses[key] = loss
     scaled = {k: v * self.scales[k] for k, v in losses.items()}
     model_loss = sum(scaled.values())
-    out = {'embed':  embed, 'post': post, 'prior': prior}
+    out = {'embed':  embed, 'post': post, 'prior': prior}#update adds new things to the dictionary
     out.update({f'{k}_loss': v for k, v in losses.items()})
     last_latent = {k: v[:, -1] for k, v in post.items()}
     last_action = data['action'][:, -1]
     state = last_latent, last_action
-    metrics = self._metrics(data, dists, post, prior, losses, model_loss)
+    metrics = self._metrics(data, dists, post, prior, losses, model_loss)#see line 219
     return model_loss.mean(), (state, out, metrics)
 
-  def imagine(self, policy, start, horizon):
+  def imagine(self, policy, start, horizon):#prediction with rssm
     first_cont = (1.0 - start['is_terminal']).astype(jnp.float32)
     keys = list(self.rssm.initial(1).keys())
     start = {k: v for k, v in start.items() if k in keys}
@@ -207,7 +207,7 @@ class WorldModel(nj.Module):
     start = {k: v[:, -1] for k, v in context.items()}
     recon = self.heads['decoder'](context)
     openl = self.heads['decoder'](
-        self.rssm.imagine(data['action'][:6, 5:], start))
+        self.rssm.imagine(data['action'][:6, 5:], start))#does openl mean open loop
     for key in self.heads['decoder'].cnn_shapes.keys():
       truth = data[key][:6].astype(jnp.float32)
       model = jnp.concatenate([recon[key].mode()[:, :5], openl[key].mode()], 1)
@@ -216,7 +216,7 @@ class WorldModel(nj.Module):
       report[f'openl_{key}'] = jaxutils.video_grid(video)
     return report
 
-  def _metrics(self, data, dists, post, prior, losses, model_loss):
+  def _metrics(self, data, dists, post, prior, losses, model_loss):#used in 178
     entropy = lambda feat: self.rssm.get_dist(feat).entropy()
     metrics = {}
     metrics.update(jaxutils.tensorstats(entropy(prior), 'prior_ent'))
@@ -239,7 +239,7 @@ class WorldModel(nj.Module):
 class ImagActorCritic(nj.Module):
 
   def __init__(self, critics, scales, act_space, config):
-    critics = {k: v for k, v in critics.items() if scales[k]}
+    critics = {k: v for k, v in critics.items() if scales[k]}#it is a dictionary again
     for key, scale in scales.items():
       assert not scale or key in critics, key
     self.critics = {k: v for k, v in critics.items() if scales[k]}
@@ -266,7 +266,7 @@ class ImagActorCritic(nj.Module):
     def loss(start):
       policy = lambda s: self.actor(sg(s)).sample(seed=nj.rng())
       traj = imagine(policy, start, self.config.imag_horizon)
-      loss, metrics = self.loss(traj)
+      loss, metrics = self.loss(traj)#see line 278
       return loss, (traj, metrics)
     mets, (traj, metrics) = self.opt(self.actor, loss, start, has_aux=True)
     metrics.update(mets)
@@ -280,25 +280,25 @@ class ImagActorCritic(nj.Module):
     advs = []
     total = sum(self.scales[k] for k in self.critics)
     for key, critic in self.critics.items():
-      rew, ret, base = critic.score(traj, self.actor)
+      rew, ret, base = critic.score(traj, self.actor)#ret means return?
       offset, invscale = self.retnorms[key](ret)
       normed_ret = (ret - offset) / invscale
       normed_base = (base - offset) / invscale
-      advs.append((normed_ret - normed_base) * self.scales[key] / total)
+      advs.append((normed_ret - normed_base) * self.scales[key] / total)#advantage function
       metrics.update(jaxutils.tensorstats(rew, f'{key}_reward'))
       metrics.update(jaxutils.tensorstats(ret, f'{key}_return_raw'))
       metrics.update(jaxutils.tensorstats(normed_ret, f'{key}_return_normed'))
       metrics[f'{key}_return_rate'] = (jnp.abs(ret) >= 0.5).mean()
     adv = jnp.stack(advs).sum(0)
-    policy = self.actor(sg(traj))
+    policy = self.actor(sg(traj))#sg means stop gradient
     logpi = policy.log_prob(sg(traj['action']))[:-1]
-    loss = {'backprop': -adv, 'reinforce': -logpi * sg(adv)}[self.grad]
-    ent = policy.entropy()[:-1]
+    loss = {'backprop': -adv, 'reinforce': -logpi * sg(adv)}[self.grad]#reinforce gradient, right?
+    ent = policy.entropy()[:-1]#ent for entropy
     loss -= self.config.actent * ent
     loss *= sg(traj['weight'])[:-1]
     loss *= self.config.loss_scales.actor
-    metrics.update(self._metrics(traj, policy, logpi, ent, adv))
-    return loss.mean(), metrics
+    metrics.update(self._metrics(traj, policy, logpi, ent, adv))#again, update is just adding more elements to the dictionary
+    return loss.mean(), metrics#_metrics is 2 lines later
 
   def _metrics(self, traj, policy, logpi, ent, adv):
     metrics = {}
@@ -331,9 +331,9 @@ class VFunction(nj.Module):
 
   def train(self, traj, actor):
     target = sg(self.score(traj)[1])
-    mets, metrics = self.opt(self.net, self.loss, traj, target, has_aux=True)
+    mets, metrics = self.opt(self.net, self.loss, traj, target, has_aux=True)#see a few lines earlier
     metrics.update(mets)
-    self.updater()
+    self.updater()#see line 326
     return metrics
 
   def loss(self, traj, target):
@@ -342,8 +342,8 @@ class VFunction(nj.Module):
     dist = self.net(traj)
     loss = -dist.log_prob(sg(target))
     if self.config.critic_slowreg == 'logprob':
-      reg = -dist.log_prob(sg(self.slow(traj).mean()))
-    elif self.config.critic_slowreg == 'xent':
+      reg = -dist.log_prob(sg(self.slow(traj).mean()))#self.slow is in line 325
+    elif self.config.critic_slowreg == 'xent':#what is einsum in the next line?
       reg = -jnp.einsum(
           '...i,...i->...',
           sg(self.slow(traj).probs),
@@ -365,7 +365,7 @@ class VFunction(nj.Module):
     value = self.net(traj).mean()
     vals = [value[-1]]
     interm = rew + disc * value[1:] * (1 - self.config.return_lambda)
-    for t in reversed(range(len(disc))):
+    for t in reversed(range(len(disc))):#that loss/value function in the paper!
       vals.append(interm[t] + disc[t] * self.config.return_lambda * vals[-1])
     ret = jnp.stack(list(reversed(vals))[:-1])
     return rew, ret, value[:-1]
